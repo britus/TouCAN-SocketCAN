@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * CAN driver for Rusoku Technologies TouCAN adapter
  *
@@ -82,10 +81,10 @@ struct __packed toucan_usb_msg {
 
 /* Status message flags */
 #define TOUCAN_STATE_MSG_OK			0x00  /* Normal condition. */
-#define TOUCAN_STATE_MSG_OVERRUN		0x01  /* Overrun occurred when sending */
+#define TOUCAN_STATE_MSG_OVERRUN		0x01  /* Overrun occured when sending */
 #define TOUCAN_STATE_MSG_BUSLIGHT		0x02  /* Error counter has reached 96 */
 #define TOUCAN_STATE_MSG_BUSHEAVY		0x03  /* Error count. has reached 128 */
-#define TOUCAN_STATE_MSG_BUSOFF		0x04  /* Device is in BUSOFF */
+#define TOUCAN_STATE_MSG_BUSOFF 		0x04  /* Device is in BUSOFF */
 #define TOUCAN_STATE_MSG_STUFF			0x20  /* Stuff Error */
 #define TOUCAN_STATE_MSG_FORM			0x21  /* Form Error */
 #define TOUCAN_STATE_MSG_ACK			0x23  /* Ack Error */
@@ -142,6 +141,7 @@ static int __toucan_usb_cmd(struct toucan_usb_priv *priv, int direction, u8 cmd,
 			    u16 len, void *msg)
 {
 	int flags;
+	int num_bytes_read;
 	int ret;
 	unsigned int pipe;
 
@@ -163,9 +163,11 @@ static int __toucan_usb_cmd(struct toucan_usb_priv *priv, int direction, u8 cmd,
 	if (ret < 0) {
 		netdev_err(priv->netdev, "sending command message failed\n");
 		return ret;
+	} else {
+		num_bytes_read = ret;
 	}
 
-	if (direction == USB_DIR_IN && ret != len)
+	if (direction == USB_DIR_IN && num_bytes_read != len)
 		ret = -EPROTO;
 
 	return ret;
@@ -203,7 +205,7 @@ static int toucan_usb_cmd(struct toucan_usb_priv *priv, int direction, u8 cmd,
 	if (ret < 0)
 		goto cleanup;
 
-	if (*((u8 *)buff_err) != TOUCAN_LASTERR_OK) {
+	if (*((u8*)buff_err) != TOUCAN_LASTERR_OK) {
 		netdev_err(priv->netdev, "command 0x%x produced an error\n", cmd);
 		ret = -EINVAL;
 		goto cleanup;
@@ -217,8 +219,10 @@ static int toucan_usb_cmd(struct toucan_usb_priv *priv, int direction, u8 cmd,
 cleanup:
 	mutex_unlock(&priv->toucan_cmd_lock);
 free_buf:
-	kfree(buff_msg);
-	kfree(buff_err);
+	if (buff_msg)
+		kfree(buff_msg);
+	if (buff_err)
+		kfree(buff_err);
 	return ret;
 }
 
@@ -245,7 +249,7 @@ static int toucan_usb_get_hw_version(struct toucan_usb_priv *priv, u32 *res)
 		return ret;
 
 	*res = be32_to_cpu(ver);
-
+	
 	return ret;
 }
 
@@ -259,7 +263,7 @@ static int toucan_usb_get_fw_version(struct toucan_usb_priv *priv, u32 *res)
 		return ret;
 
 	*res = be32_to_cpu(ver);
-
+	
 	return ret;
 }
 
@@ -331,7 +335,7 @@ static int toucan_usb_set_mode(struct net_device *netdev, enum can_mode mode)
 		}
 
 		err = toucan_usb_cmd_start(priv);
-		if (err) {
+		if (err){
 			netdev_warn(netdev, "couldn't start device");
 			break;
 		}
@@ -362,25 +366,25 @@ static void toucan_usb_write_bulk_callback(struct urb *urb)
 	if (!netif_device_present(netdev))
 		return;
 
-	switch (urb->status) {
+	switch(urb->status) {
 	case 0:
 		netdev->stats.tx_packets++;
 		netdev->stats.tx_bytes += context->dlc;
-		can_get_echo_skb(netdev, context->echo_index,NULL);
+		can_get_echo_skb(netdev, context->echo_index);
 		break;
 
 	case -ENOENT:
 	case -ECONNRESET:
 	case -EPROTO:
 	case -ESHUTDOWN:
-		can_free_echo_skb(netdev, context->echo_index,NULL);
+		can_free_echo_skb(netdev, context->echo_index);
 		break;
 
 	default:
 		if (net_ratelimit())
 			netdev_err(netdev, "Tx URB aborted (%d)\n",
-				   urb->status);
-		can_free_echo_skb(netdev, context->echo_index,NULL);
+				    urb->status);
+		can_free_echo_skb(netdev, context->echo_index);
 		break;
 	}
 
@@ -388,7 +392,7 @@ static void toucan_usb_write_bulk_callback(struct urb *urb)
 	context->echo_index = MAX_TX_URBS;
 	atomic_dec(&priv->active_tx_urbs);
 
-	if (!urb->status)
+	if(!urb->status)
 		netif_wake_queue(netdev);
 }
 
@@ -402,7 +406,7 @@ static void toucan_rx_err_msg(struct toucan_usb_priv *priv,
 	int rx_errors = 0;
 	int tx_errors = 0;
 
-	status = (struct toucan_status_msg *)(&msg->data);
+	status = (struct toucan_status_msg*)(&msg->data);
 
 	skb = alloc_can_err_skb(priv->netdev, &cf);
 	if (!skb)
@@ -519,7 +523,7 @@ static void toucan_rx_can_msg(struct toucan_usb_priv *priv,
 			return;
 
 		cf->can_id = be32_to_cpu(msg->id);
-		can_frame_set_cc_len(cf, msg->dlc, priv->can.ctrlmode);
+		cf->can_dlc = get_can_dlc(msg->dlc);
 
 		if (msg->flags & TOUCAN_MSG_FLG_EXTID)
 			cf->can_id |= CAN_EFF_FLAG;
@@ -530,7 +534,7 @@ static void toucan_rx_can_msg(struct toucan_usb_priv *priv,
 			memcpy(cf->data, msg->data, cf->can_dlc);
 
 		stats->rx_packets++;
-		stats->rx_bytes += cf->len;
+		stats->rx_bytes += cf->can_dlc;
 		netif_rx(skb);
 	}
 }
@@ -542,6 +546,7 @@ static void toucan_rx_usb_pkt(struct urb *urb)
 	struct toucan_usb_priv *priv = urb->context;
 
 	while (pos < urb->actual_length) {
+
 		if (pos + sizeof(*msg) > urb->actual_length) {
 			netdev_err(priv->netdev, "format error\n");
 			break;
@@ -666,7 +671,7 @@ static netdev_tx_t toucan_usb_start_xmit(struct sk_buff *skb,
 	urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
 	usb_anchor_urb(urb, &priv->tx_submitted);
 
-	can_put_echo_skb(skb, netdev, context->echo_index,0);
+	can_put_echo_skb(skb, netdev, context->echo_index);
 
 	atomic_inc(&priv->active_tx_urbs);
 
@@ -693,7 +698,7 @@ nofreecontext:
 	return NETDEV_TX_BUSY;
 
 failed:
-	can_free_echo_skb(netdev, context->echo_index,NULL);
+	can_free_echo_skb(netdev, context->echo_index);
 
 	usb_unanchor_urb(urb);
 	usb_free_coherent(priv->udev, size, buf, urb->transfer_dma);
@@ -902,8 +907,7 @@ static int toucan_usb_probe(struct usb_interface *intf,
 	priv->can.do_get_berr_counter = toucan_usb_get_berr_counter;
 	priv->can.ctrlmode_supported = CAN_CTRLMODE_LOOPBACK |
 				       CAN_CTRLMODE_LISTENONLY |
-				       CAN_CTRLMODE_ONE_SHOT |
-				       CAN_CTRLMODE_CC_LEN8_DLC;
+				       CAN_CTRLMODE_ONE_SHOT;
 
 	priv->adapter = adapter;
 	priv->ep_ctrl_in = usb_rcvctrlpipe(priv->udev, 0);
@@ -971,6 +975,7 @@ static void toucan_usb_disconnect(struct usb_interface *intf)
 		unregister_netdev(priv->netdev);
 		toucan_usb_unlink_all_urbs(priv);
 		free_candev(priv->netdev);
+
 	}
 }
 
@@ -984,4 +989,4 @@ static struct usb_driver toucan_usb_driver = {
 module_usb_driver(toucan_usb_driver);
 
 MODULE_DESCRIPTION("CAN driver for Rusoku Technologies TouCAN adapters");
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");
